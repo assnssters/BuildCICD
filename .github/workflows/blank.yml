@@ -1,4 +1,4 @@
-name: Build PRoot for Android (Auto Clone) (Gemini)
+name: Build PRoot for Android (Auto Clone)
 
 on:
   workflow_dispatch: # Cho phép chạy thủ công từ GitHub UI
@@ -19,10 +19,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y git build-essential autoconf libtool pkg-config automake bison flex
 
-      - name: Set up Android NDK
-        uses: android-actions/setup-ndk@v1
+      - name: Set up Android NDK # <--- Đã thay đổi action và ndk-version
+        uses: nttld/setup-ndk@v1 # Sử dụng action được duy trì tốt hơn
         with:
-          ndk-version: '25.2.8797439' # Chọn phiên bản NDK phù hợp (đã test và ổn định)
+          ndk-version: r27c # Sử dụng phiên bản NDK LTS mới nhất (hoặc r26d, r25b, v.v.)
+          # Bạn cũng có thể thử các phiên bản khác như 'latest' hoặc 'r26d' nếu r27c gặp vấn đề
 
       - name: Define ABIs
         id: abis
@@ -71,8 +72,9 @@ jobs:
                 ;;
             esac
 
-            export CC="${TOOLCHAIN_BIN_DIR}/${TARGET_HOST}${ANDROID_PLATFORM}-clang"
-            export CXX="${TOOLCHAIN_BIN_DIR}/${TARGET_HOST}${ANDROID_PLATFORM}-clang++"
+            # Sử dụng --target để chỉ định host cho clang một cách chính xác hơn
+            export CC="${TOOLCHAIN_BIN_DIR}/${TARGET_HOST}${ANDROID_PLATFORM}-clang --target=${TARGET_HOST}${ANDROID_PLATFORM}"
+            export CXX="${TOOLCHAIN_BIN_DIR}/${TARGET_HOST}${ANDROID_PLATFORM}-clang++ --target=${TARGET_HOST}${ANDROID_PLATFORM}"
             export AR="${TOOLCHAIN_BIN_DIR}/${TARGET_HOST}-ar"
             export LD="${TOOLCHAIN_BIN_DIR}/${TARGET_HOST}-ld"
             export AS="${TOOLCHAIN_BIN_DIR}/${TARGET_HOST}-as"
