@@ -19,24 +19,22 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y git build-essential autoconf libtool pkg-config automake bison flex
 
-      - name: Set up Android NDK # <--- Đã thay đổi action và ndk-version
+      - name: Set up Android NDK
         uses: nttld/setup-ndk@v1 # Sử dụng action được duy trì tốt hơn
         with:
           ndk-version: r27c # Sử dụng phiên bản NDK LTS mới nhất (hoặc r26d, r25b, v.v.)
-          # Bạn cũng có thể thử các phiên bản khác như 'latest' hoặc 'r26d' nếu r27c gặp vấn đề
-
-      - name: Define ABIs
-        id: abis
-        run: |
-          echo "ABIS=(arm64-v8a armeabi-v7a x86 x86_64)" >> $GITHUB_ENV
 
       - name: Clone Talloc and PRoot Sources
         run: |
           git clone https://git.samba.org/samba.git talloc_src # Mã nguồn talloc (trong Samba)
           git clone https://github.com/proot-me/proot.git proot_src # Mã nguồn proot
 
-      - name: Build Talloc and PRoot for each ABI
+      - name: Build Talloc and PRoot for each ABI # <--- Đã thay đổi cách định nghĩa ABIs
         run: |
+          # Define ABIs directly within this step's run environment
+          # This ensures it's interpreted as a proper array
+          declare -a ABIS=(arm64-v8a armeabi-v7a x86 x86_64)
+
           # Đường dẫn NDK
           export ANDROID_NDK_HOME=${ANDROID_NDK_ROOT}
           export ANDROID_PLATFORM=android-21 # API level tối thiểu
@@ -45,7 +43,7 @@ jobs:
           mkdir -p build_output/libs
 
           # --- Loop qua từng ABI ---
-          for ABI in ${ABIS[@]}; do
+          for ABI in "${ABIS[@]}"; do # <--- Đã thêm dấu ngoặc kép để tránh lỗi tách từ
             echo "--- Building for ABI: $ABI ---"
             
             # --- Cấu hình toolchain cho ABI hiện tại ---
