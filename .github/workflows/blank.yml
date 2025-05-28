@@ -1,0 +1,155 @@
+name: Build PRoot for Android (Auto Clone) (Gemini)
+
+on:
+  workflow_dispatch: # Cho phép chạy thủ công từ GitHub UI
+  push:
+    tags:
+      - 'v*.*.*' # Chạy khi có tag dạng vX.Y.Z được push (để tạo release)
+
+jobs:
+  build:
+    runs-on: ubuntu-latest # Sử dụng runner Ubuntu mới nhất
+
+    steps:
+      - name: Checkout Workflow Repository
+        uses: actions/checkout@v4 # Clone repository chứa workflow này
+
+      - name: Install Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git build-essential autoconf libtool pkg-config automake bison flex
+
+      - name: Set up Android NDK
+        uses: android-actions/setup-ndk@v1
+        with:
+          ndk-version: '25.2.8797439' # Chọn phiên bản NDK phù hợp (đã test và ổn định)
+
+      - name: Define ABIs
+        id: abis
+        run: |
+          echo "ABIS=(arm64-v8a armeabi-v7a x86 x86_64)" >> $GITHUB_ENV
+
+      - name: Clone Talloc and PRoot Sources
+        run: |
+          git clone https://git.samba.org/samba.git talloc_src # Mã nguồn talloc (trong Samba)
+          git clone https://github.com/proot-me/proot.git proot_src # Mã nguồn proot
+
+      - name: Build Talloc and PRoot for each ABI
+        run: |
+          # Đường dẫn NDK
+          export ANDROID_NDK_HOME=${ANDROID_NDK_ROOT}
+          export ANDROID_PLATFORM=android-21 # API level tối thiểu
+          
+          # Tạo thư mục output
+          mkdir -p build_output/libs
+
+          # --- Loop qua từng ABI ---
+          for ABI in ${ABIS[@]}; do
+            echo "--- Building for ABI: $ABI ---"
+            
+            # --- Cấu hình toolchain cho ABI hiện tại ---
+            case "$ABI" in
+              "arm64-v8a")
+                TARGET_HOST="aarch64-linux-android"
+                TOOLCHAIN_BIN_DIR="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+                ;;
+              "armeabi-v7a")
+                TARGET_HOST="arm-linux-androideabi"
+                TOOLCHAIN_BIN_DIR="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+                ;;
+              "x86")
+                TARGET_HOST="i686-linux-android"
+                TOOLCHAIN_BIN_DIR="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+                ;;
+              "x86_64")
+                TARGET_HOST="x86_64-linux-android"
+                TOOLCHAIN_BIN_DIR="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+                ;;
+              *)
+                echo "Unknown ABI: $ABI"
+                exit 1
+                ;;
+            esac
+
+            export CC="${TOOLCHAIN_BIN_DIR}/${TARGET_HOST}${ANDROID_PLATFORM}-clang"
+            export CXX="${TOOLCHAIN_BIN_DIR}/${TARGET_HOST}${ANDROID_PLATFORM}-clang++"
+            export AR="${TOOLCHAIN_BIN_DIR}/${TARGET_HOST}-ar"
+            export LD="${TOOLCHAIN_BIN_DIR}/${TARGET_HOST}-ld"
+            export AS="${TOOLCHAIN_BIN_DIR}/${TARGET_HOST}-as"
+            export STRIP="${TOOLCHAIN_BIN_DIR}/${TARGET_HOST}-strip"
+            export RANLIB="${TOOLCHAIN_BIN_DIR}/${TARGET_HOST}-ranlib"
+            export CFLAGS="-fPIC -D_FILE_OFFSET_BITS=64" # Quan trọng cho thư viện chia sẻ và file lớn
+            export LDFLAGS=""
+
+            # --- 1. Build Talloc ---
+            echo "Building Talloc for $ABI..."
+            rm -rf talloc_build_$ABI # Xóa thư mục build cũ nếu có
+            mkdir -p talloc_build_$ABI
+            pushd talloc_build_$ABI
+            
+            ../talloc_src/lib/talloc/configure \
+              --host=$TARGET_HOST \
+              --prefix=$(pwd)/install_dir \
+              --disable-shared # Build static talloc để liên kết dễ dàng hơn vào proot
+            
+            make -j$(nproc)
+            make install
+            popd
+            
+            # --- 2. Build PRoot ---
+            echo "Building PRoot for $ABI..."
+            rm -rf proot_build_$ABI # Xóa thư mục build cũ nếu có
+            mkdir -p proot_build_$ABI
+            pushd proot_build_$ABI
+            
+            # COPY proot source
+            cp -r ../proot_src/* .
+
+            # PRoot thường không có configure script truyền thống.
+            # Ta sẽ tạo một Makefile đơn giản hoặc dùng lệnh biên dịch trực tiếp.
+            # Các file .c cần thiết của proot (có thể kiểm tra trong proot_src/Makefile.am):
+            PROOT_SRCS="proot.c mount.c trace.c syscall.c file.c rpath.c path.c util.c signal.c process.c"
+            
+            # Các cờ liên kết:
+            # -I: Thêm đường dẫn include của talloc
+            # -L: Thêm đường dẫn lib của talloc
+            # -ltalloc: Liên kết với libtalloc
+            # -landroid -llog: Các thư viện cần thiết của Android NDK
+            ${CC} -o libproot.so -shared -fPIC \
+              ${PROOT_SRCS} \
+              -I../talloc_build_${ABI}/install_dir/include \
+              -L../talloc_build_${ABI}/install_dir/lib \
+              ${CFLAGS} ${LDFLAGS} \
+              -ltalloc \
+              -landroid -llog # Ví dụ: liblog cho logging của Android
+            
+            # Tạo thư mục ABI trong output và copy thư viện
+            mkdir -p ../build_output/libs/$ABI
+            cp libproot.so ../build_output/libs/$ABI/libproot.so
+            
+            popd # Quay lại thư mục gốc
+
+            echo "--- Finished building for ABI: $ABI ---"
+          done
+
+      - name: Zip Libraries
+        run: |
+          cd build_output/libs
+          for ABI_DIR in *; do
+            zip -r ../../libproot_${ABI_DIR}.zip $ABI_DIR
+          done
+
+      - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            libproot_arm64-v8a.zip
+            libproot_armeabi-v7a.zip
+            libproot_x86.zip
+            libproot_x86_64.zip
+          name: PRoot ${{ github.ref_name }} # Tên release là tag name (VD: v1.0.0)
+          tag_name: ${{ github.ref_name }} # Sử dụng tag name làm tên release
+          generate_release_notes: true # Tự động tạo release notes
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
